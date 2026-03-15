@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Git Workflow
+
+Commit and push changes to GitHub regularly throughout your work. Make clean, descriptive commit messages so progress is never lost and we can easily revert if needed. Commit after completing each logical unit of work (new feature, bug fix, refactor, etc.) rather than waiting until the end.
+
 ## Project Overview
 
 This repository contains standalone HTML5 games. Each game is a single self-contained HTML file with embedded CSS and JavaScript - no build tools, bundlers, or external dependencies.
