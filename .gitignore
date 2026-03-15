@@ -1,0 +1,14 @@
+# Claude Code
+.claude/
+
+# Windows artifacts
+nul
+Thumbs.db
+desktop.ini
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
