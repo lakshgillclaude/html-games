@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pet Pong</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Courier New', monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+            overflow: hidden;
+        }
+        canvas {
+            border: 3px solid #4a4a6a;
+            box-shadow: 0 0 20px rgba(100, 100, 150, 0.5);
+            background: #1a1a2e;
+        }
+        #gameCanvas {
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Game constants
+        const CANVAS_WIDTH = 800;
+        const CANVAS_HEIGHT = 600;
+        const PADDLE_WIDTH = 20;
+        const PADDLE_HEIGHT = 80;
+        const PADDLE_SPEED = 300;
+        const BALL_SIZE = 12;
+        const BALL_SPEED = 350;
+        const WINNING_SCORE = 21;
+
+        // Game states
+        const GAME_STATE = {
+            MENU: 'menu',
+            MODE_SELECT: 'mode_select',
+            DIFFICULTY_SELECT: 'difficulty_select',
+            PLAYING: 'playing',
+            GAME_OVER: 'game_over'
+        };
+
+        // Game modes
+        const GAME_MODE = {
+            TWO_PLAYER: 'two_player',
+            VS_AI: 'vs_ai'
+        };
+
+        // AI Difficulty
+        const AI_DIFFICULTY = {
+            EASY: { name: 'Easy', reactionSpeed: 0.02, errorMargin: 60, description: 'Slow reactions, big mistakes' },
+            MEDIUM: { name: 'Medium', reactionSpeed: 0.05, errorMargin: 30, description: 'Moderate tracking' },
+            HARD: { name: 'Hard', reactionSpeed: 0.1, errorMargin: 10, description: 'Fast and precise' }
+        };
+
+        // Game state
+        let gameState = GAME_STATE.MENU;
+        let gameMode = GAME_MODE.TWO_PLAYER;
+        let aiDifficulty = AI_DIFFICULTY.MEDIUM;
+        let keys = {};
+        let lastTime = 0;
+        let menuPulse = 0;
+        let selectedOption = 0;
+
+        // Screen shake
+        let screenShake = { intensity: 0, duration: 0 };
+
+        // Audio context
+        let audioContext = null;
+
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function playSound(frequency, duration, type = 'square') {
+            if (!audioContext) return;
+
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.frequency.value = frequency;
+            oscillator.type = type;
+
+            gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + duration);
+
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + duration);
+        }
+
+        function playPaddleHit() {
+            playSound(400, 0.1);
+        }
+
+        function playWallBounce() {
+            playSound(300, 0.05);
+        }
+
+        function playScoreSound() {
+            if (!audioContext) return;
+            // Sweep from 200Hz to 400Hz
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.frequency.setValueAtTime(200, audioContext.currentTime);
+            oscillator.frequency.linearRampToValueAtTime(400, audioContext.currentTime + 0.3);
+            oscillator.type = 'square';
+
+            gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.3);
+        }
+
+        function playVictorySound() {
+            if (!audioContext) return;
+            // Ascending victory jingle
+            const notes = [262, 330, 392, 523]; // C4, E4, G4, C5
+            notes.forEach((freq, i) => {
+                setTimeout(() => playSound(freq, 0.2, 'triangle'), i * 150);
+            });
+        }
+
+        // Particle class
+        class Particle {
+            constructor(x, y, color, speed = 200) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * speed;
+                this.vy = (Math.random() - 0.5) * speed;
+                this.life = 0.5;
+                this.maxLife = 0.5;
+                this.color = color;
+                this.size = 3 + Math.random() * 3;
+            }
+
+            update(deltaTime) {
+                this.x += this.vx * deltaTime;
+                this.y += this.vy * deltaTime;
+                this.life -= deltaTime;
+            }
+
+            draw() {
+                const alpha = this.life / this.maxLife;
+                ctx.fillStyle = this.color;
+                ctx.globalAlpha = alpha;
+                ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        // Trail particle for ball
+        class TrailParticle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.life = 0.2;
+                this.maxLife = 0.2;
+                this.size = BALL_SIZE * 0.8;
+            }
+
+            update(deltaTime) {
+                this.life -= deltaTime;
+            }
+
+            draw() {
+                const alpha = (this.life / this.maxLife) * 0.5;
+                ctx.fillStyle = '#ffffff';
+                ctx.globalAlpha = alpha;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        // Paddle class
+        class Paddle {
+            constructor(x, isLeft) {
+                this.x = x;
+                this.y = CANVAS_HEIGHT / 2;
+                this.width = PADDLE_WIDTH;
+                this.height = PADDLE_HEIGHT;
+                this.speed = PADDLE_SPEED;
+                this.isLeft = isLeft;
+                this.blinkTimer = 0;
+                this.isBlinking = false;
+                this.tailWag = 0;
+            }
+
+            update(deltaTime) {
+                // Update animations
+                this.blinkTimer += deltaTime;
+                if (this.blinkTimer > 3) {
+                    this.isBlinking = true;
+                    if (this.blinkTimer > 3.15) {
+                        this.isBlinking = false;
+                        this.blinkTimer = 0;
+                    }
+                }
+                this.tailWag += deltaTime * 8;
+
+                // Handle input
+                let dy = 0;
+                if (this.isLeft) {
+                    if (keys['w'] || keys['W']) dy = -1;
+                    if (keys['s'] || keys['S']) dy = 1;
+                } else {
+                    if (keys['ArrowUp']) dy = -1;
+                    if (keys['ArrowDown']) dy = 1;
+                }
+
+                this.y += dy * this.speed * deltaTime;
+
+                // Bounds checking
+                this.y = Math.max(this.height / 2, Math.min(CANVAS_HEIGHT - this.height / 2, this.y));
+            }
+
+            updateAI(deltaTime, ball, difficulty) {
+                // Update animations
+                this.blinkTimer += deltaTime;
+                if (this.blinkTimer > 3) {
+                    this.isBlinking = true;
+                    if (this.blinkTimer > 3.15) {
+                        this.isBlinking = false;
+                        this.blinkTimer = 0;
+                    }
+                }
+                this.tailWag += deltaTime * 8;
+
+                // AI logic
+                let targetY = ball.y + (Math.random() - 0.5) * difficulty.errorMargin;
+
+                // Only track when ball is coming towards AI
+                if (ball.vx > 0) {
+                    // Predict where ball will be
+                    const timeToReach = (this.x - ball.x) / ball.vx;
+                    targetY = ball.y + ball.vy * timeToReach;
+
+                    // Account for bounces (simplified)
+                    while (targetY < 0 || targetY > CANVAS_HEIGHT) {
+                        if (targetY < 0) targetY = -targetY;
+                        if (targetY > CANVAS_HEIGHT) targetY = 2 * CANVAS_HEIGHT - targetY;
+                    }
+
+                    targetY += (Math.random() - 0.5) * difficulty.errorMargin;
+                }
+
+                // Move towards target
+                const diff = targetY - this.y;
+                this.y += diff * difficulty.reactionSpeed * deltaTime * 60;
+
+                // Bounds checking
+                this.y = Math.max(this.height / 2, Math.min(CANVAS_HEIGHT - this.height / 2, this.y));
+            }
+
+            draw() {
+                if (this.isLeft) {
+                    this.drawCat();
+                } else {
+                    this.drawDog();
+                }
+            }
+
+            drawCat() {
+                const x = this.x - this.width / 2;
+                const y = this.y - this.height / 2;
+                const px = 2; // Pixel size
+
+                // Body (black)
+                ctx.fillStyle = '#1a1a1a';
+                ctx.fillRect(x, y + 16, this.width, this.height - 32);
+
+                // White chest/belly
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(x + 6, y + 24, 8, 32);
+
+                // Head (black)
+                ctx.fillStyle = '#1a1a1a';
+                ctx.fillRect(x + 2, y + 4, 16, 16);
+
+                // Ears (black triangles)
+                ctx.fillRect(x + 2, y, 4, 6);
+                ctx.fillRect(x + 14, y, 4, 6);
+
+                // Inner ears (pink)
+                ctx.fillStyle = '#ffaaaa';
+                ctx.fillRect(x + 4, y + 2, 2, 3);
+                ctx.fillRect(x + 14, y + 2, 2, 3);
+
+                // White face markings
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(x + 6, y + 12, 8, 6);
+
+                // Eyes
+                if (!this.isBlinking) {
+                    ctx.fillStyle = '#00ff00';
+                    ctx.fillRect(x + 6, y + 8, 3, 3);
+                    ctx.fillRect(x + 12, y + 8, 3, 3);
+                    // Pupils
+                    ctx.fillStyle = '#000000';
+                    ctx.fillRect(x + 7, y + 9, 2, 2);
+                    ctx.fillRect(x + 13, y + 9, 2, 2);
+                } else {
+                    ctx.fillStyle = '#1a1a1a';
+                    ctx.fillRect(x + 6, y + 9, 3, 1);
+                    ctx.fillRect(x + 12, y + 9, 3, 1);
+                }
+
+                // Nose (pink)
+                ctx.fillStyle = '#ff6b6b';
+                ctx.fillRect(x + 9, y + 13, 2, 2);
+
+                // Whiskers
+                ctx.fillStyle = '#888888';
+                ctx.fillRect(x, y + 14, 4, 1);
+                ctx.fillRect(x + 16, y + 14, 4, 1);
+                ctx.fillRect(x, y + 16, 5, 1);
+                ctx.fillRect(x + 15, y + 16, 5, 1);
+
+                // Paws
+                ctx.fillStyle = '#1a1a1a';
+                ctx.fillRect(x + 2, y + this.height - 12, 6, 8);
+                ctx.fillRect(x + 12, y + this.height - 12, 6, 8);
+
+                // Paw pads (pink)
+                ctx.fillStyle = '#ffaaaa';
+                ctx.fillRect(x + 4, y + this.height - 6, 3, 3);
+                ctx.fillRect(x + 13, y + this.height - 6, 3, 3);
+
+                // Tail (animated, extending to the left)
+                const tailOffset = Math.sin(this.tailWag) * 4;
+                ctx.fillStyle = '#1a1a1a';
+                ctx.fillRect(x - 8, y + 40 + tailOffset, 8, 4);
+                ctx.fillRect(x - 12, y + 36 + tailOffset, 6, 4);
+            }
+
+            drawDog() {
+                const x = this.x - this.width / 2;
+                const y = this.y - this.height / 2;
+
+                // Body (golden/cream)
+                ctx.fillStyle = '#daa520';
+                ctx.fillRect(x, y + 16, this.width, this.height - 32);
+
+                // Fluffy texture (lighter patches)
+                ctx.fillStyle = '#f0c040';
+                ctx.fillRect(x + 2, y + 20, 4, 4);
+                ctx.fillRect(x + 10, y + 28, 4, 4);
+                ctx.fillRect(x + 4, y + 40, 4, 4);
+                ctx.fillRect(x + 12, y + 48, 4, 4);
+                ctx.fillRect(x + 2, y + 56, 4, 4);
+
+                // Head (golden)
+                ctx.fillStyle = '#daa520';
+                ctx.fillRect(x + 2, y + 2, 16, 18);
+
+                // Fluffy head fur
+                ctx.fillStyle = '#f0c040';
+                ctx.fillRect(x, y, 4, 6);
+                ctx.fillRect(x + 16, y, 4, 6);
+                ctx.fillRect(x + 6, y, 8, 4);
+
+                // Floppy ears
+                ctx.fillStyle = '#c49418';
+                ctx.fillRect(x - 2, y + 4, 6, 14);
+                ctx.fillRect(x + 16, y + 4, 6, 14);
+
+                // Inner ears (darker)
+                ctx.fillStyle = '#a07010';
+                ctx.fillRect(x, y + 6, 3, 10);
+                ctx.fillRect(x + 17, y + 6, 3, 10);
+
+                // Snout
+                ctx.fillStyle = '#f0c040';
+                ctx.fillRect(x + 6, y + 12, 8, 8);
+
+                // Eyes
+                if (!this.isBlinking) {
+                    ctx.fillStyle = '#4a3000';
+                    ctx.fillRect(x + 5, y + 7, 4, 4);
+                    ctx.fillRect(x + 12, y + 7, 4, 4);
+                    // Eye shine
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(x + 6, y + 8, 2, 2);
+                    ctx.fillRect(x + 13, y + 8, 2, 2);
+                } else {
+                    ctx.fillStyle = '#4a3000';
+                    ctx.fillRect(x + 5, y + 9, 4, 1);
+                    ctx.fillRect(x + 12, y + 9, 4, 1);
+                }
+
+                // Nose
+                ctx.fillStyle = '#2a1a00';
+                ctx.fillRect(x + 8, y + 14, 4, 3);
+
+                // Tongue (hanging out)
+                ctx.fillStyle = '#ff6b6b';
+                ctx.fillRect(x + 9, y + 17, 3, 4);
+                ctx.fillRect(x + 8, y + 19, 5, 2);
+
+                // Paws
+                ctx.fillStyle = '#daa520';
+                ctx.fillRect(x + 2, y + this.height - 12, 6, 10);
+                ctx.fillRect(x + 12, y + this.height - 12, 6, 10);
+
+                // Paw pads
+                ctx.fillStyle = '#c49418';
+                ctx.fillRect(x + 3, y + this.height - 4, 4, 3);
+                ctx.fillRect(x + 13, y + this.height - 4, 4, 3);
+
+                // Tail (animated, extending to the right)
+                const tailOffset = Math.sin(this.tailWag) * 6;
+                ctx.fillStyle = '#daa520';
+                ctx.fillRect(x + this.width, y + 38 + tailOffset, 10, 6);
+                ctx.fillRect(x + this.width + 8, y + 34 + tailOffset, 6, 6);
+
+                // Fluffy tail tip
+                ctx.fillStyle = '#f0c040';
+                ctx.fillRect(x + this.width + 10, y + 32 + tailOffset, 4, 4);
+            }
+        }
+
+        // Ball class
+        class Ball {
+            constructor() {
+                this.reset(1);
+            }
+
+            reset(direction) {
+                this.x = CANVAS_WIDTH / 2;
+                this.y = CANVAS_HEIGHT / 2;
+
+                // Random angle between -45 and 45 degrees
+                const angle = (Math.random() - 0.5) * Math.PI / 2;
+                this.vx = Math.cos(angle) * BALL_SPEED * direction;
+                this.vy = Math.sin(angle) * BALL_SPEED;
+            }
+
+            update(deltaTime, paddles, particles, trailParticles) {
+                // Add trail
+                if (Math.random() < 0.5) {
+                    trailParticles.push(new TrailParticle(this.x, this.y));
+                }
+
+                this.x += this.vx * deltaTime;
+                this.y += this.vy * deltaTime;
+
+                // Wall collision (top/bottom)
+                if (this.y - BALL_SIZE / 2 < 0) {
+                    this.y = BALL_SIZE / 2;
+                    this.vy = -this.vy;
+                    playWallBounce();
+                }
+                if (this.y + BALL_SIZE / 2 > CANVAS_HEIGHT) {
+                    this.y = CANVAS_HEIGHT - BALL_SIZE / 2;
+                    this.vy = -this.vy;
+                    playWallBounce();
+                }
+
+                // Paddle collision
+                paddles.forEach(paddle => {
+                    if (this.checkPaddleCollision(paddle)) {
+                        // Calculate hit position (-1 to 1)
+                        const hitPos = (this.y - paddle.y) / (paddle.height / 2);
+
+                        // Reverse x direction
+                        if (paddle.isLeft) {
+                            this.x = paddle.x + paddle.width / 2 + BALL_SIZE / 2;
+                            this.vx = Math.abs(this.vx);
+                        } else {
+                            this.x = paddle.x - paddle.width / 2 - BALL_SIZE / 2;
+                            this.vx = -Math.abs(this.vx);
+                        }
+
+                        // Adjust angle based on hit position (max 60 degrees)
+                        const maxAngle = Math.PI / 3;
+                        const angle = hitPos * maxAngle;
+                        const speed = BALL_SPEED;
+
+                        this.vx = Math.cos(angle) * speed * (paddle.isLeft ? 1 : -1);
+                        this.vy = Math.sin(angle) * speed;
+
+                        playPaddleHit();
+
+                        // Hit particles
+                        for (let i = 0; i < 8; i++) {
+                            particles.push(new Particle(this.x, this.y, paddle.isLeft ? '#00ff00' : '#daa520', 150));
+                        }
+                    }
+                });
+
+                // Score detection
+                if (this.x < 0) {
+                    return 'right';
+                }
+                if (this.x > CANVAS_WIDTH) {
+                    return 'left';
+                }
+
+                return null;
+            }
+
+            checkPaddleCollision(paddle) {
+                return this.x - BALL_SIZE / 2 < paddle.x + paddle.width / 2 &&
+                       this.x + BALL_SIZE / 2 > paddle.x - paddle.width / 2 &&
+                       this.y - BALL_SIZE / 2 < paddle.y + paddle.height / 2 &&
+                       this.y + BALL_SIZE / 2 > paddle.y - paddle.height / 2;
+            }
+
+            draw() {
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, BALL_SIZE / 2, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Glow effect
+                ctx.shadowColor = '#ffffff';
+                ctx.shadowBlur = 10;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, BALL_SIZE / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        // Game objects
+        let leftPaddle = new Paddle(40, true);
+        let rightPaddle = new Paddle(CANVAS_WIDTH - 40, false);
+        let ball = new Ball();
+        let particles = [];
+        let trailParticles = [];
+        let leftScore = 0;
+        let rightScore = 0;
+
+        // Update game
+        function update(deltaTime) {
+            // Update screen shake
+            if (screenShake.duration > 0) {
+                screenShake.duration -= deltaTime;
+            }
+
+            switch (gameState) {
+                case GAME_STATE.MENU:
+                    menuPulse += deltaTime * 3;
+                    // Animate paddles on menu
+                    leftPaddle.blinkTimer += deltaTime;
+                    rightPaddle.blinkTimer += deltaTime;
+                    leftPaddle.tailWag += deltaTime * 8;
+                    rightPaddle.tailWag += deltaTime * 8;
+                    break;
+
+                case GAME_STATE.MODE_SELECT:
+                case GAME_STATE.DIFFICULTY_SELECT:
+                    menuPulse += deltaTime * 3;
+                    break;
+
+                case GAME_STATE.PLAYING:
+                    // Update paddles
+                    leftPaddle.update(deltaTime);
+
+                    if (gameMode === GAME_MODE.VS_AI) {
+                        rightPaddle.updateAI(deltaTime, ball, aiDifficulty);
+                    } else {
+                        rightPaddle.update(deltaTime);
+                    }
+
+                    // Update ball
+                    const scored = ball.update(deltaTime, [leftPaddle, rightPaddle], particles, trailParticles);
+
+                    if (scored) {
+                        if (scored === 'left') {
+                            leftScore++;
+                        } else {
+                            rightScore++;
+                        }
+
+                        playScoreSound();
+
+                        // Score particles
+                        const scoreX = scored === 'left' ? 100 : CANVAS_WIDTH - 100;
+                        for (let i = 0; i < 20; i++) {
+                            particles.push(new Particle(scoreX, 80, scored === 'left' ? '#00ff00' : '#daa520', 300));
+                        }
+
+                        // Screen shake
+                        screenShake.intensity = 5;
+                        screenShake.duration = 0.3;
+
+                        // Check for winner
+                        if (leftScore >= WINNING_SCORE || rightScore >= WINNING_SCORE) {
+                            gameState = GAME_STATE.GAME_OVER;
+                            playVictorySound();
+                        } else {
+                            // Reset ball toward scorer
+                            ball.reset(scored === 'left' ? -1 : 1);
+                        }
+                    }
+
+                    // Update particles
+                    particles.forEach(p => p.update(deltaTime));
+                    particles = particles.filter(p => p.life > 0);
+
+                    trailParticles.forEach(p => p.update(deltaTime));
+                    trailParticles = trailParticles.filter(p => p.life > 0);
+                    break;
+
+                case GAME_STATE.GAME_OVER:
+                    menuPulse += deltaTime * 3;
+                    // Update particles
+                    particles.forEach(p => p.update(deltaTime));
+                    particles = particles.filter(p => p.life > 0);
+                    break;
+            }
+        }
+
+        // Draw functions
+        function drawBackground() {
+            // Gradient background
+            const gradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+            gradient.addColorStop(0, '#1a1a2e');
+            gradient.addColorStop(1, '#16213e');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            // Center line (dashed)
+            ctx.strokeStyle = '#4a4a6a';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([15, 15]);
+            ctx.beginPath();
+            ctx.moveTo(CANVAS_WIDTH / 2, 0);
+            ctx.lineTo(CANVAS_WIDTH / 2, CANVAS_HEIGHT);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Center circle
+            ctx.strokeStyle = '#4a4a6a';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, 50, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        function drawHUD() {
+            // Scores
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 72px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText(leftScore.toString(), CANVAS_WIDTH / 4, 90);
+            ctx.fillText(rightScore.toString(), 3 * CANVAS_WIDTH / 4, 90);
+
+            // Player labels
+            ctx.font = '16px Courier New';
+            ctx.fillStyle = '#888888';
+            ctx.fillText('CAT', CANVAS_WIDTH / 4, 120);
+            ctx.fillText(gameMode === GAME_MODE.VS_AI ? 'DOG (AI)' : 'DOG', 3 * CANVAS_WIDTH / 4, 120);
+
+            // First to 21
+            ctx.font = '14px Courier New';
+            ctx.fillStyle = '#666666';
+            ctx.fillText('First to 21', CANVAS_WIDTH / 2, 30);
+
+            // Game mode indicator
+            if (gameMode === GAME_MODE.VS_AI) {
+                ctx.fillText(`AI: ${aiDifficulty.name}`, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 20);
+            }
+        }
+
+        function drawMenu() {
+            drawBackground();
+
+            // Title
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 72px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText('PET PONG', CANVAS_WIDTH / 2, 150);
+
+            // Draw cat and dog on sides
+            ctx.save();
+            ctx.translate(150, 300);
+            ctx.scale(3, 3);
+            drawMenuCat();
+            ctx.restore();
+
+            ctx.save();
+            ctx.translate(650, 300);
+            ctx.scale(3, 3);
+            drawMenuDog();
+            ctx.restore();
+
+            // Instructions
+            const pulse = 0.5 + Math.sin(menuPulse) * 0.5;
+            ctx.fillStyle = `rgba(255, 255, 255, ${pulse})`;
+            ctx.font = 'bold 24px Courier New';
+            ctx.fillText('PRESS ENTER TO START', CANVAS_WIDTH / 2, 480);
+
+            ctx.fillStyle = '#888888';
+            ctx.font = '16px Courier New';
+            ctx.fillText('W/S - Player 1 (Cat)    UP/DOWN - Player 2 (Dog)', CANVAS_WIDTH / 2, 540);
+        }
+
+        function drawMenuCat() {
+            const x = -10;
+            const y = -40;
+
+            // Body
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(x, y + 16, 20, 48);
+
+            // White chest
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(x + 6, y + 24, 8, 32);
+
+            // Head
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(x + 2, y + 4, 16, 16);
+
+            // Ears
+            ctx.fillRect(x + 2, y, 4, 6);
+            ctx.fillRect(x + 14, y, 4, 6);
+
+            // Inner ears
+            ctx.fillStyle = '#ffaaaa';
+            ctx.fillRect(x + 4, y + 2, 2, 3);
+            ctx.fillRect(x + 14, y + 2, 2, 3);
+
+            // White face
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(x + 6, y + 12, 8, 6);
+
+            // Eyes
+            const blinking = leftPaddle.isBlinking;
+            if (!blinking) {
+                ctx.fillStyle = '#00ff00';
+                ctx.fillRect(x + 6, y + 8, 3, 3);
+                ctx.fillRect(x + 12, y + 8, 3, 3);
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(x + 7, y + 9, 2, 2);
+                ctx.fillRect(x + 13, y + 9, 2, 2);
+            } else {
+                ctx.fillStyle = '#1a1a1a';
+                ctx.fillRect(x + 6, y + 9, 3, 1);
+                ctx.fillRect(x + 12, y + 9, 3, 1);
+            }
+
+            // Nose
+            ctx.fillStyle = '#ff6b6b';
+            ctx.fillRect(x + 9, y + 13, 2, 2);
+
+            // Paws
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(x + 2, y + 56, 6, 8);
+            ctx.fillRect(x + 12, y + 56, 6, 8);
+        }
+
+        function drawMenuDog() {
+            const x = -10;
+            const y = -40;
+
+            // Body
+            ctx.fillStyle = '#daa520';
+            ctx.fillRect(x, y + 16, 20, 48);
+
+            // Fluffy texture
+            ctx.fillStyle = '#f0c040';
+            ctx.fillRect(x + 2, y + 20, 4, 4);
+            ctx.fillRect(x + 10, y + 28, 4, 4);
+            ctx.fillRect(x + 4, y + 40, 4, 4);
+
+            // Head
+            ctx.fillStyle = '#daa520';
+            ctx.fillRect(x + 2, y + 2, 16, 18);
+
+            // Fluffy fur
+            ctx.fillStyle = '#f0c040';
+            ctx.fillRect(x, y, 4, 6);
+            ctx.fillRect(x + 16, y, 4, 6);
+            ctx.fillRect(x + 6, y, 8, 4);
+
+            // Floppy ears
+            ctx.fillStyle = '#c49418';
+            ctx.fillRect(x - 2, y + 4, 6, 14);
+            ctx.fillRect(x + 16, y + 4, 6, 14);
+
+            // Inner ears
+            ctx.fillStyle = '#a07010';
+            ctx.fillRect(x, y + 6, 3, 10);
+            ctx.fillRect(x + 17, y + 6, 3, 10);
+
+            // Snout
+            ctx.fillStyle = '#f0c040';
+            ctx.fillRect(x + 6, y + 12, 8, 8);
+
+            // Eyes
+            const blinking = rightPaddle.isBlinking;
+            if (!blinking) {
+                ctx.fillStyle = '#4a3000';
+                ctx.fillRect(x + 5, y + 7, 4, 4);
+                ctx.fillRect(x + 12, y + 7, 4, 4);
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(x + 6, y + 8, 2, 2);
+                ctx.fillRect(x + 13, y + 8, 2, 2);
+            } else {
+                ctx.fillStyle = '#4a3000';
+                ctx.fillRect(x + 5, y + 9, 4, 1);
+                ctx.fillRect(x + 12, y + 9, 4, 1);
+            }
+
+            // Nose
+            ctx.fillStyle = '#2a1a00';
+            ctx.fillRect(x + 8, y + 14, 4, 3);
+
+            // Tongue
+            ctx.fillStyle = '#ff6b6b';
+            ctx.fillRect(x + 9, y + 17, 3, 4);
+
+            // Paws
+            ctx.fillStyle = '#daa520';
+            ctx.fillRect(x + 2, y + 56, 6, 8);
+            ctx.fillRect(x + 12, y + 56, 6, 8);
+        }
+
+        function drawModeSelect() {
+            drawBackground();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 48px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText('SELECT MODE', CANVAS_WIDTH / 2, 150);
+
+            const options = ['2 PLAYERS', 'VS COMPUTER'];
+            options.forEach((option, index) => {
+                const y = 280 + index * 100;
+                const isSelected = selectedOption === index;
+
+                if (isSelected) {
+                    ctx.fillStyle = '#4a4a6a';
+                    ctx.fillRect(CANVAS_WIDTH / 2 - 150, y - 35, 300, 60);
+                }
+
+                ctx.fillStyle = isSelected ? '#ffffff' : '#888888';
+                ctx.font = isSelected ? 'bold 32px Courier New' : '28px Courier New';
+                ctx.fillText(option, CANVAS_WIDTH / 2, y);
+            });
+
+            ctx.fillStyle = '#666666';
+            ctx.font = '18px Courier New';
+            ctx.fillText('UP/DOWN to Select    ENTER to Confirm', CANVAS_WIDTH / 2, 520);
+            ctx.fillText('ESC for Menu', CANVAS_WIDTH / 2, 550);
+        }
+
+        function drawDifficultySelect() {
+            drawBackground();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 48px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText('SELECT DIFFICULTY', CANVAS_WIDTH / 2, 120);
+
+            const difficulties = [AI_DIFFICULTY.EASY, AI_DIFFICULTY.MEDIUM, AI_DIFFICULTY.HARD];
+            difficulties.forEach((diff, index) => {
+                const y = 240 + index * 100;
+                const isSelected = selectedOption === index;
+
+                if (isSelected) {
+                    ctx.fillStyle = '#4a4a6a';
+                    ctx.fillRect(CANVAS_WIDTH / 2 - 200, y - 40, 400, 70);
+                }
+
+                ctx.fillStyle = isSelected ? '#ffffff' : '#888888';
+                ctx.font = isSelected ? 'bold 32px Courier New' : '28px Courier New';
+                ctx.fillText(diff.name.toUpperCase(), CANVAS_WIDTH / 2, y);
+
+                ctx.fillStyle = isSelected ? '#aaaaaa' : '#666666';
+                ctx.font = '16px Courier New';
+                ctx.fillText(diff.description, CANVAS_WIDTH / 2, y + 25);
+            });
+
+            ctx.fillStyle = '#666666';
+            ctx.font = '18px Courier New';
+            ctx.fillText('UP/DOWN to Select    ENTER to Confirm', CANVAS_WIDTH / 2, 560);
+            ctx.fillText('ESC to Go Back', CANVAS_WIDTH / 2, 585);
+        }
+
+        function drawGameOver() {
+            drawBackground();
+
+            // Semi-transparent overlay
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            const winner = leftScore >= WINNING_SCORE ? 'CAT' : 'DOG';
+            const winnerColor = leftScore >= WINNING_SCORE ? '#00ff00' : '#daa520';
+
+            ctx.fillStyle = winnerColor;
+            ctx.font = 'bold 64px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${winner} WINS!`, CANVAS_WIDTH / 2, 180);
+
+            // Draw winner character
+            ctx.save();
+            ctx.translate(CANVAS_WIDTH / 2, 320);
+            ctx.scale(4, 4);
+            if (leftScore >= WINNING_SCORE) {
+                drawMenuCat();
+            } else {
+                drawMenuDog();
+            }
+            ctx.restore();
+
+            // Final score
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '36px Courier New';
+            ctx.fillText(`${leftScore} - ${rightScore}`, CANVAS_WIDTH / 2, 450);
+
+            const pulse = 0.5 + Math.sin(menuPulse) * 0.5;
+            ctx.fillStyle = `rgba(255, 255, 255, ${pulse})`;
+            ctx.font = '24px Courier New';
+            ctx.fillText('PRESS ENTER TO PLAY AGAIN', CANVAS_WIDTH / 2, 520);
+
+            ctx.fillStyle = '#888888';
+            ctx.font = '18px Courier New';
+            ctx.fillText('ESC for Menu', CANVAS_WIDTH / 2, 560);
+        }
+
+        // Main draw function
+        function draw() {
+            // Apply screen shake
+            ctx.save();
+            if (screenShake.duration > 0) {
+                const shakeX = (Math.random() - 0.5) * screenShake.intensity * 2;
+                const shakeY = (Math.random() - 0.5) * screenShake.intensity * 2;
+                ctx.translate(shakeX, shakeY);
+            }
+
+            switch (gameState) {
+                case GAME_STATE.MENU:
+                    drawMenu();
+                    break;
+
+                case GAME_STATE.MODE_SELECT:
+                    drawModeSelect();
+                    break;
+
+                case GAME_STATE.DIFFICULTY_SELECT:
+                    drawDifficultySelect();
+                    break;
+
+                case GAME_STATE.PLAYING:
+                    drawBackground();
+
+                    // Draw trail particles
+                    trailParticles.forEach(p => p.draw());
+
+                    // Draw particles
+                    particles.forEach(p => p.draw());
+
+                    // Draw paddles
+                    leftPaddle.draw();
+                    rightPaddle.draw();
+
+                    // Draw ball
+                    ball.draw();
+
+                    // Draw HUD
+                    drawHUD();
+                    break;
+
+                case GAME_STATE.GAME_OVER:
+                    drawGameOver();
+                    break;
+            }
+
+            ctx.restore();
+        }
+
+        // Game loop
+        function gameLoop(currentTime) {
+            const deltaTime = Math.min((currentTime - lastTime) / 1000, 0.1);
+            lastTime = currentTime;
+
+            update(deltaTime);
+            draw();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Input handling
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+
+            // Prevent scrolling
+            if (['ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+                e.preventDefault();
+            }
+
+            switch (gameState) {
+                case GAME_STATE.MENU:
+                    if (e.key === 'Enter') {
+                        initAudio();
+                        gameState = GAME_STATE.MODE_SELECT;
+                        selectedOption = 0;
+                    }
+                    break;
+
+                case GAME_STATE.MODE_SELECT:
+                    if (e.key === 'ArrowUp') {
+                        selectedOption = (selectedOption - 1 + 2) % 2;
+                    } else if (e.key === 'ArrowDown') {
+                        selectedOption = (selectedOption + 1) % 2;
+                    } else if (e.key === 'Enter') {
+                        if (selectedOption === 0) {
+                            gameMode = GAME_MODE.TWO_PLAYER;
+                            startGame();
+                        } else {
+                            gameMode = GAME_MODE.VS_AI;
+                            gameState = GAME_STATE.DIFFICULTY_SELECT;
+                            selectedOption = 1; // Default to Medium
+                        }
+                    } else if (e.key === 'Escape') {
+                        gameState = GAME_STATE.MENU;
+                    }
+                    break;
+
+                case GAME_STATE.DIFFICULTY_SELECT:
+                    if (e.key === 'ArrowUp') {
+                        selectedOption = (selectedOption - 1 + 3) % 3;
+                    } else if (e.key === 'ArrowDown') {
+                        selectedOption = (selectedOption + 1) % 3;
+                    } else if (e.key === 'Enter') {
+                        const difficulties = [AI_DIFFICULTY.EASY, AI_DIFFICULTY.MEDIUM, AI_DIFFICULTY.HARD];
+                        aiDifficulty = difficulties[selectedOption];
+                        startGame();
+                    } else if (e.key === 'Escape') {
+                        gameState = GAME_STATE.MODE_SELECT;
+                        selectedOption = 1;
+                    }
+                    break;
+
+                case GAME_STATE.PLAYING:
+                    if (e.key === 'Escape') {
+                        gameState = GAME_STATE.MENU;
+                    }
+                    break;
+
+                case GAME_STATE.GAME_OVER:
+                    if (e.key === 'Enter') {
+                        startGame();
+                    } else if (e.key === 'Escape') {
+                        gameState = GAME_STATE.MENU;
+                    }
+                    break;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        function startGame() {
+            leftScore = 0;
+            rightScore = 0;
+            leftPaddle = new Paddle(40, true);
+            rightPaddle = new Paddle(CANVAS_WIDTH - 40, false);
+            ball = new Ball();
+            particles = [];
+            trailParticles = [];
+            gameState = GAME_STATE.PLAYING;
+        }
+
+        // Start game loop
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
