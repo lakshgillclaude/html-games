@@ -64,10 +64,16 @@
 
         // AI Difficulty
         const AI_DIFFICULTY = {
-            EASY: { name: 'Easy', reactionSpeed: 0.02, errorMargin: 60, description: 'Slow reactions, big mistakes' },
-            MEDIUM: { name: 'Medium', reactionSpeed: 0.05, errorMargin: 30, description: 'Moderate tracking' },
-            HARD: { name: 'Hard', reactionSpeed: 0.1, errorMargin: 10, description: 'Fast and precise' }
+            EASY: { name: 'Easy', reactionSpeed: 0.03, errorMargin: 50, description: 'Slow reactions, big mistakes' },
+            MEDIUM: { name: 'Medium', reactionSpeed: 0.08, errorMargin: 15, description: 'Good tracking, uses flippers' },
+            HARD: { name: 'Hard', reactionSpeed: 0.12, errorMargin: 5, description: 'Fast, precise, smart flippers' }
         };
+
+        // Flipper constants
+        const FLIPPER_DURATION = 0.15;  // How long flipper stays extended
+        const FLIPPER_COOLDOWN = 0.4;   // Cooldown between flips
+        const FLIPPER_EXTEND = 25;      // How far flipper extends
+        const FLIPPER_SPEED_BOOST = 1.4; // Speed multiplier on flipper hit
 
         // Game state
         let gameState = GAME_STATE.MENU;
@@ -203,6 +209,7 @@
         class Paddle {
             constructor(x, isLeft) {
                 this.x = x;
+                this.baseX = x;
                 this.y = CANVAS_HEIGHT / 2;
                 this.width = PADDLE_WIDTH;
                 this.height = PADDLE_HEIGHT;
@@ -211,6 +218,22 @@
                 this.blinkTimer = 0;
                 this.isBlinking = false;
                 this.tailWag = 0;
+                // Flipper state
+                this.flipperActive = 0;      // Time remaining on current flip
+                this.flipperCooldown = 0;    // Cooldown timer
+                this.flipperExtend = 0;      // Current extension amount (for animation)
+            }
+
+            activateFlipper() {
+                if (this.flipperCooldown <= 0) {
+                    this.flipperActive = FLIPPER_DURATION;
+                    this.flipperCooldown = FLIPPER_COOLDOWN;
+                    playSound(500, 0.08, 'square'); // Flipper sound
+                }
+            }
+
+            isFlipperActive() {
+                return this.flipperActive > 0;
             }
 
             update(deltaTime) {
@@ -225,14 +248,37 @@
                 }
                 this.tailWag += deltaTime * 8;
 
+                // Update flipper timers
+                if (this.flipperActive > 0) {
+                    this.flipperActive -= deltaTime;
+                    this.flipperExtend = Math.min(FLIPPER_EXTEND, this.flipperExtend + deltaTime * 300);
+                } else {
+                    this.flipperExtend = Math.max(0, this.flipperExtend - deltaTime * 200);
+                }
+                if (this.flipperCooldown > 0) {
+                    this.flipperCooldown -= deltaTime;
+                }
+
+                // Update x position based on flipper
+                const extendDir = this.isLeft ? 1 : -1;
+                this.x = this.baseX + this.flipperExtend * extendDir;
+
                 // Handle input
                 let dy = 0;
                 if (this.isLeft) {
                     if (keys['w'] || keys['W']) dy = -1;
                     if (keys['s'] || keys['S']) dy = 1;
+                    // Flipper key for player 1: A or D
+                    if (keys['a'] || keys['A'] || keys['d'] || keys['D']) {
+                        this.activateFlipper();
+                    }
                 } else {
                     if (keys['ArrowUp']) dy = -1;
                     if (keys['ArrowDown']) dy = 1;
+                    // Flipper key for player 2: ArrowLeft or ArrowRight
+                    if (keys['ArrowLeft'] || keys['ArrowRight']) {
+                        this.activateFlipper();
+                    }
                 }
 
                 this.y += dy * this.speed * deltaTime;
@@ -253,6 +299,20 @@
                 }
                 this.tailWag += deltaTime * 8;
 
+                // Update flipper timers
+                if (this.flipperActive > 0) {
+                    this.flipperActive -= deltaTime;
+                    this.flipperExtend = Math.min(FLIPPER_EXTEND, this.flipperExtend + deltaTime * 300);
+                } else {
+                    this.flipperExtend = Math.max(0, this.flipperExtend - deltaTime * 200);
+                }
+                if (this.flipperCooldown > 0) {
+                    this.flipperCooldown -= deltaTime;
+                }
+
+                // Update x position based on flipper
+                this.x = this.baseX - this.flipperExtend;
+
                 // AI logic
                 let targetY = ball.y + (Math.random() - 0.5) * difficulty.errorMargin;
 
@@ -269,6 +329,24 @@
                     }
 
                     targetY += (Math.random() - 0.5) * difficulty.errorMargin;
+
+                    // AI flipper logic - activate when ball is close and aligned
+                    const distToBall = this.x - ball.x;
+                    const isAligned = Math.abs(ball.y - this.y) < this.height / 2 + 10;
+
+                    // Different difficulties use flippers differently
+                    if (difficulty === AI_DIFFICULTY.HARD) {
+                        // Hard: Use flipper when ball is close and well-aligned
+                        if (distToBall < 80 && distToBall > 30 && isAligned) {
+                            this.activateFlipper();
+                        }
+                    } else if (difficulty === AI_DIFFICULTY.MEDIUM) {
+                        // Medium: Use flipper sometimes when close
+                        if (distToBall < 60 && distToBall > 20 && isAligned && Math.random() < 0.3) {
+                            this.activateFlipper();
+                        }
+                    }
+                    // Easy: Never uses flipper
                 }
 
                 // Move towards target
@@ -280,6 +358,35 @@
             }
 
             draw() {
+                // Draw flipper extension effect
+                if (this.flipperExtend > 0) {
+                    const extendDir = this.isLeft ? 1 : -1;
+                    const extendX = this.baseX + (this.flipperExtend * extendDir);
+
+                    // Glowing paw swipe effect
+                    ctx.save();
+                    ctx.globalAlpha = this.flipperExtend / FLIPPER_EXTEND * 0.6;
+                    ctx.fillStyle = this.isLeft ? '#00ff00' : '#daa520';
+
+                    // Draw swipe arc
+                    for (let i = 0; i < 3; i++) {
+                        const offset = i * 8;
+                        ctx.beginPath();
+                        ctx.arc(
+                            this.baseX + (extendDir * (10 + offset)),
+                            this.y,
+                            this.height / 2 - 10,
+                            this.isLeft ? -Math.PI/2 : Math.PI/2,
+                            this.isLeft ? Math.PI/2 : -Math.PI/2,
+                            !this.isLeft
+                        );
+                        ctx.lineWidth = 4;
+                        ctx.strokeStyle = this.isLeft ? '#00ff00' : '#daa520';
+                        ctx.stroke();
+                    }
+                    ctx.restore();
+                }
+
                 if (this.isLeft) {
                     this.drawCat();
                 } else {
@@ -489,6 +596,9 @@
                         // Calculate hit position (-1 to 1)
                         const hitPos = (this.y - paddle.y) / (paddle.height / 2);
 
+                        // Check if flipper is active for speed boost
+                        const flipperBoost = paddle.isFlipperActive() ? FLIPPER_SPEED_BOOST : 1.0;
+
                         // Reverse x direction
                         if (paddle.isLeft) {
                             this.x = paddle.x + paddle.width / 2 + BALL_SIZE / 2;
@@ -501,12 +611,23 @@
                         // Adjust angle based on hit position (max 60 degrees)
                         const maxAngle = Math.PI / 3;
                         const angle = hitPos * maxAngle;
-                        const speed = BALL_SPEED;
+                        const speed = BALL_SPEED * flipperBoost;
 
                         this.vx = Math.cos(angle) * speed * (paddle.isLeft ? 1 : -1);
                         this.vy = Math.sin(angle) * speed;
 
-                        playPaddleHit();
+                        if (flipperBoost > 1) {
+                            playSound(600, 0.15, 'sawtooth'); // Power hit sound
+                            // Extra particles for flipper hit
+                            for (let i = 0; i < 15; i++) {
+                                particles.push(new Particle(this.x, this.y, '#ffff00', 250));
+                            }
+                            // Small screen shake
+                            screenShake.intensity = 3;
+                            screenShake.duration = 0.1;
+                        } else {
+                            playPaddleHit();
+                        }
 
                         // Hit particles
                         for (let i = 0; i < 8; i++) {
@@ -677,8 +798,8 @@
             // Player labels
             ctx.font = '16px Courier New';
             ctx.fillStyle = '#888888';
-            ctx.fillText('CAT', CANVAS_WIDTH / 4, 120);
-            ctx.fillText(gameMode === GAME_MODE.VS_AI ? 'DOG (AI)' : 'DOG', 3 * CANVAS_WIDTH / 4, 120);
+            ctx.fillText('JUGANOO', CANVAS_WIDTH / 4, 120);
+            ctx.fillText(gameMode === GAME_MODE.VS_AI ? 'BUDDY (AI)' : 'BUDDY', 3 * CANVAS_WIDTH / 4, 120);
 
             // First to 21
             ctx.font = '14px Courier New';
@@ -688,6 +809,29 @@
             // Game mode indicator
             if (gameMode === GAME_MODE.VS_AI) {
                 ctx.fillText(`AI: ${aiDifficulty.name}`, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 20);
+            }
+
+            // Flipper indicators
+            ctx.font = '12px Courier New';
+
+            // Left flipper indicator
+            if (leftPaddle.flipperCooldown > 0) {
+                ctx.fillStyle = '#666666';
+                ctx.fillText('FLIP: recharging', CANVAS_WIDTH / 4, CANVAS_HEIGHT - 40);
+            } else {
+                ctx.fillStyle = '#00ff00';
+                ctx.fillText('FLIP: READY [A/D]', CANVAS_WIDTH / 4, CANVAS_HEIGHT - 40);
+            }
+
+            // Right flipper indicator (only in 2P mode)
+            if (gameMode === GAME_MODE.TWO_PLAYER) {
+                if (rightPaddle.flipperCooldown > 0) {
+                    ctx.fillStyle = '#666666';
+                    ctx.fillText('FLIP: recharging', 3 * CANVAS_WIDTH / 4, CANVAS_HEIGHT - 40);
+                } else {
+                    ctx.fillStyle = '#daa520';
+                    ctx.fillText('FLIP: READY [</>]', 3 * CANVAS_WIDTH / 4, CANVAS_HEIGHT - 40);
+                }
             }
         }
 
@@ -720,8 +864,9 @@
             ctx.fillText('PRESS ENTER TO START', CANVAS_WIDTH / 2, 480);
 
             ctx.fillStyle = '#888888';
-            ctx.font = '16px Courier New';
-            ctx.fillText('W/S - Player 1 (Cat)    UP/DOWN - Player 2 (Dog)', CANVAS_WIDTH / 2, 540);
+            ctx.font = '14px Courier New';
+            ctx.fillText('JUGANOO: W/S + A/D flip    BUDDY: Arrows + </> flip', CANVAS_WIDTH / 2, 530);
+            ctx.fillText('Use flippers to smash the ball!', CANVAS_WIDTH / 2, 555);
         }
 
         function drawMenuCat() {
@@ -914,7 +1059,7 @@
             ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
             ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-            const winner = leftScore >= WINNING_SCORE ? 'CAT' : 'DOG';
+            const winner = leftScore >= WINNING_SCORE ? 'JUGANOO' : 'BUDDY';
             const winnerColor = leftScore >= WINNING_SCORE ? '#00ff00' : '#daa520';
 
             ctx.fillStyle = winnerColor;
